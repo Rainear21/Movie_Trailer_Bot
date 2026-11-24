@@ -43,14 +43,27 @@ as environment variables on the host, and set `PUBLIC_URL` to the host's https a
 
 ### Option A: Any Linux server with Docker (VPS, home server, Raspberry Pi)
 
+`docker-compose.prod.yml` runs the bot behind [Caddy](https://caddyserver.com), which
+serves the dashboard over HTTPS and renews the certificate on its own.
+
+1. Point your domain (or a subdomain like `trailers.example.com`) at the server with a DNS **A record**.
+2. Open ports **80** and **443** on the server's firewall.
+3. Set up the config and start it:
+
 ```bash
-cp .env.example .env    # fill it in; set PUBLIC_URL to your domain
-docker compose up -d --build
-docker compose logs -f
+git clone https://github.com/Rainear21/Movie_Trailer_Bot.git
+cd Movie_Trailer_Bot
+cp .env.example .env    # fill in the Discord settings and DOMAIN
+docker compose -f docker-compose.prod.yml up -d --build
+docker compose -f docker-compose.prod.yml logs -f
 ```
 
-Put a reverse proxy with HTTPS in front of port 8080. Caddy is the easiest:
-`your-domain.com { reverse_proxy localhost:8080 }`.
+4. In the Discord Developer Portal, add `https://<your domain>/callback` under OAuth2 → Redirects.
+
+To update later: `git pull && docker compose -f docker-compose.prod.yml up -d --build`.
+
+The plain `docker-compose.yml` runs without HTTPS on port 8080, for testing or for
+use behind a proxy you already have.
 
 ### Option B: Railway / Render / Fly.io
 
