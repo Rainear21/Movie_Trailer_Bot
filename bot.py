@@ -119,6 +119,8 @@ class TrailerBot(discord.Client):
         await self.web_runner.setup()
         await web.TCPSite(self.web_runner, "0.0.0.0", self.port).start()
         log.info("Dashboard running at %s", self.public_url)
+        log.info("Discord OAuth2 redirect must be exactly: %s/callback  (client ID %s)",
+                 self.public_url, self.client_id)
         if not self.client_secret:
             log.warning("DISCORD_CLIENT_SECRET not set - dashboard login is disabled.")
 
