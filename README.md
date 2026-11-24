@@ -81,6 +81,7 @@ The health check endpoint is `/healthz`.
 
 | Command | Who | What it does |
 |---|---|---|
+| `/trailer <movie>` | Everyone | Find any movie's official trailer (suggests titles as you type; needs TMDB) |
 | `/trailers dashboard` | Everyone | Link to this server's dashboard page |
 | `/trailers setchannel [channel]` | Manage Server | Quick setup without the dashboard |
 | `/trailers stop` | Manage Server | Pause posting |
@@ -88,6 +89,12 @@ The health check endpoint is `/healthz`.
 | `/trailers latest [count]` | Everyone | Recently posted trailers |
 
 The first time the bot starts, slash commands can take a few minutes to show up in Discord.
+
+## Movies only
+
+Studio channels like Netflix also post TV series trailers. With **Movies only** turned on
+in the dashboard (the default), the bot looks up each new YouTube trailer on TMDB and skips
+it if it's a series. Without a TMDB key, it only catches titles that mention a season or series.
 
 ## How it avoids spam
 

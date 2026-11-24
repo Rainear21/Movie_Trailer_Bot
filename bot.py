@@ -20,7 +20,10 @@ from discord.ext import tasks
 from dotenv import load_dotenv
 
 from db import Database
-from sources import fetch_tmdb, fetch_youtube, normalize_channel_ref
+from datetime import date
+
+from sources import (fetch_tmdb, fetch_youtube, guess_title, normalize_channel_ref,
+                     tmdb_media_type, tmdb_movie_trailer, tmdb_search_movies)
 
 BASE = Path(__file__).resolve().parent
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
@@ -56,6 +59,8 @@ def video_matches(guild: dict, video: dict, keys: set[str]) -> bool:
         return False
     if guild["skip_shorts"] and "/shorts/" in video["url"]:
         return False
+    if guild.get("movies_only", True) and video.get("media_type") == "tv":
+        return False
     title = video["title"].lower()
     if any(w in title for w in guild["exclude_keywords"]):
         return False
@@ -64,12 +69,23 @@ def video_matches(guild: dict, video: dict, keys: set[str]) -> bool:
     return not guild["include_keywords"] or any(w in title for w in guild["include_keywords"])
 
 
+def format_release(release_date: str | None) -> str | None:
+    """'2026-12-18' -> 'Releases Dec 18, 2026' (or 'Released ...' if it's in the past)."""
+    try:
+        d = date.fromisoformat(release_date or "")
+    except ValueError:
+        return None
+    verb = "Releases" if d >= date.today() else "Released"
+    return f"{verb} {d.strftime('%b')} {d.day}, {d.year}"
+
+
 def format_post(video: dict, ping_role_id: int | None) -> str:
     lines = [f"<@&{ping_role_id}>"] if ping_role_id else []
     lines.append(f"🎬 **{video['title']}**")
     details = [f"via {video['source_name']}"]
-    if video.get("release_date"):
-        details.append(f"in theaters {video['release_date']}")
+    release = format_release(video.get("release_date"))
+    if release:
+        details.append(release)
     lines.append(" · ".join(details))
     lines.append(video["url"])  # Discord turns this into a playable YouTube embed
     return "\n".join(lines)
@@ -172,7 +188,8 @@ class TrailerBot(discord.Client):
                     log.warning("TMDB check failed: %s", exc)
 
             fresh = self.db.record_trailers(found, int(self.config.get("max_age_days", 7)))
-            log.info("Checked %d sources: %d videos, %d new trailers", len(refs), len(found), fresh)
+            await self.classify(fresh)
+            log.info("Checked %d sources: %d videos, %d new trailers", len(refs), len(found), len(fresh))
 
             posted = 0
             for g in guilds:
@@ -181,6 +198,23 @@ class TrailerBot(discord.Client):
                 posted += await self.deliver(g, cache)
             self.db.prune()
             return posted
+
+    async def classify(self, videos: list[dict]) -> None:
+        """Label new YouTube trailers as movie or TV series, for the movies-only filter."""
+        seen: dict[str, str] = {}
+        for v in videos:
+            if v["media_type"]:
+                continue
+            key = guess_title(v["title"]).lower()
+            if key not in seen:
+                try:
+                    seen[key] = await tmdb_media_type(self.session, self.tmdb_key, v["title"])
+                except Exception as exc:
+                    log.debug("Couldn't classify %r: %s", v["title"], exc)
+                    seen[key] = "unknown"
+            self.db.set_media_type(v["video_id"], seen[key])
+            if seen[key] == "tv":
+                log.info("Labelled as a series: %s", v["title"])
 
     async def deliver(self, guild: dict, cache: dict) -> int:
         candidates = self.db.candidates_for(guild)
@@ -272,10 +306,62 @@ def register_commands(bot: TrailerBot):
         text = "\n".join(f"• [{r['title']}](<{r['url']}>) - {r['source_name']}" for r in recent)
         await interaction.response.send_message(text, ephemeral=True)
 
+    async def movie_autocomplete(interaction: discord.Interaction, current: str):
+        if not bot.tmdb_key or len(current.strip()) < 2:
+            return []
+        try:
+            movies = await tmdb_search_movies(bot.session, bot.tmdb_key, current.strip(), limit=10)
+        except Exception:
+            return []
+        choices = []
+        for m in movies:
+            year = (m.get("release_date") or "")[:4]
+            name = f"{m.get('title', '?')} ({year})" if year else m.get("title", "?")
+            choices.append(app_commands.Choice(name=name[:100], value=str(m["id"])))
+        return choices
+
+    @bot.tree.command(name="trailer", description="Find the official trailer for a movie")
+    @app_commands.describe(movie="Start typing a movie title")
+    @app_commands.autocomplete(movie=movie_autocomplete)
+    @app_commands.checks.cooldown(1, 5)
+    async def trailer(interaction: discord.Interaction, movie: str):
+        if not bot.tmdb_key:
+            await interaction.response.send_message(
+                "Movie search isn't set up on this bot yet (it needs a TMDB API key).", ephemeral=True)
+            return
+        await interaction.response.defer(thinking=True)
+        try:
+            movie_id = int(movie) if movie.isdigit() else None
+            if movie_id is None:  # typed a title without picking a suggestion
+                results = await tmdb_search_movies(bot.session, bot.tmdb_key, movie, limit=1)
+                movie_id = results[0]["id"] if results else None
+            if movie_id is None:
+                await interaction.followup.send(f"Couldn't find a movie called **{movie[:100]}**.")
+                return
+            details, video = await tmdb_movie_trailer(bot.session, bot.tmdb_key, movie_id)
+        except Exception as exc:
+            log.warning("/trailer lookup failed: %s", exc)
+            await interaction.followup.send("Movie search is having trouble right now. Try again in a minute.")
+            return
+
+        year = (details.get("release_date") or "")[:4]
+        title = f"{details.get('title', 'Unknown')}" + (f" ({year})" if year else "")
+        if not video:
+            await interaction.followup.send(f"**{title}** doesn't have a trailer on YouTube yet.")
+            return
+        lines = [f"🎬 **{title}** - {video.get('name') or video.get('type')}"]
+        release = format_release(details.get("release_date"))
+        if release:
+            lines.append(release)
+        lines.append(f"https://www.youtube.com/watch?v={video['key']}")
+        await interaction.followup.send("\n".join(lines), allowed_mentions=discord.AllowedMentions.none())
+
     @bot.tree.error
     async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.MissingPermissions):
             msg = "You need the **Manage Server** permission for that."
+        elif isinstance(error, app_commands.CommandOnCooldown):
+            msg = f"Slow down a little - try again in {error.retry_after:.0f}s."
         else:
             log.exception("Command error", exc_info=error)
             msg = "Something went wrong running that command."

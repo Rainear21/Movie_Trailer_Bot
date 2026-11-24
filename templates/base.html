@@ -5,10 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}{{ bot_name }}{% endblock %}</title>
   <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" type="image/png" sizes="64x64" href="/static/favicon.png">
+  <link rel="apple-touch-icon" href="/static/logo-180.png">
+  <meta name="theme-color" content="#f2b544">
+  <meta property="og:site_name" content="{{ bot_name }}">
+  <meta property="og:title" content="{% block og_title %}{{ bot_name }}{% endblock %}">
+  <meta property="og:description" content="New movie trailers, posted to your Discord server the moment they drop.">
+  <meta property="og:image" content="{{ public_url }}/static/logo-512.png">
 </head>
 <body>
   <header class="top">
-    <a class="brand" href="/"><span class="mark" aria-hidden="true"></span>{{ bot_name }}</a>
+    <a class="brand" href="/"><img class="logo" src="/static/logo-mark.png" alt="" width="32" height="32">{{ bot_name }}</a>
     <nav>
       {% if user %}
         <a href="/dashboard">Servers</a>

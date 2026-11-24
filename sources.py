@@ -222,3 +222,85 @@ async def fetch_tmdb(session, api_key: str, cfg: dict) -> list[Trailer]:
 
     batches = await asyncio.gather(*(videos_for(m) for m in movies.values()))
     return [t for batch in batches for t in batch]
+
+
+async def tmdb_get(session, api_key: str, path: str, **params) -> dict:
+    headers, base_params = _tmdb_auth(api_key)
+    async with session.get(f"{TMDB_API}{path}", headers=headers,
+                           params={**base_params, **params}) as resp:
+        if resp.status != 200:
+            raise RuntimeError(f"TMDB {path} returned HTTP {resp.status}")
+        return await resp.json()
+
+
+# --------------------------------------------------------------------------- search
+
+async def tmdb_search_movies(session, api_key: str, query: str, limit: int = 10) -> list[dict]:
+    data = await tmdb_get(session, api_key, "/search/movie", query=query,
+                          include_adult="false", language="en-US", page=1)
+    return data.get("results", [])[:limit]
+
+
+def pick_best_trailer(videos: list[dict]) -> dict | None:
+    """Prefer official trailers, then any trailer, then teasers; newest first within each."""
+    youtube = [v for v in videos if v.get("site") == "YouTube" and v.get("key")]
+
+    def rank(v):
+        kind = {"Trailer": 0, "Teaser": 2}.get(v.get("type"), 4)
+        return (kind + (0 if v.get("official") else 1), -(parse_iso(v.get("published_at")) or
+                                                         datetime.min.replace(tzinfo=timezone.utc)).timestamp())
+
+    candidates = [v for v in youtube if v.get("type") in ("Trailer", "Teaser")]
+    return min(candidates, key=rank) if candidates else None
+
+
+async def tmdb_movie_trailer(session, api_key: str, movie_id: int) -> tuple[dict, dict | None]:
+    """Return (movie details, best trailer video or None)."""
+    movie = await tmdb_get(session, api_key, f"/movie/{movie_id}", language="en-US",
+                           append_to_response="videos", include_video_language="en,null")
+    return movie, pick_best_trailer(movie.get("videos", {}).get("results", []))
+
+
+# --------------------------------------------------------------------------- movie vs series
+
+_TRAILER_WORDS = re.compile(
+    r"\b(official|final|new|exclusive|international|teaser|trailer|clip|tv spot|spot|"
+    r"first look|sneak peek|announcement|reveal|\#\d+|\d+(st|nd|rd|th)?)\b", re.I)
+
+
+def guess_title(video_title: str) -> str:
+    """Pull the movie/show name out of a YouTube title like 'SUPERMAN | Official Trailer | HBO'."""
+    title = re.sub(r"\[[^\]]*\]|\([^)]*\)", " ", video_title)  # drop (2026), [HD] etc.
+    parts = [p.strip() for p in re.split(r"\s+[|\-–—]\s+|\s*\|\s*", title) if p.strip()]
+    # Use the first part that still has words left after removing trailer jargon.
+    for part in parts:
+        if _TRAILER_WORDS.sub(" ", part).strip(" :-–—"):
+            # "Official Trailer: Dune" style - keep the side after the colon.
+            if ":" in part and not _TRAILER_WORDS.sub(" ", part.split(":", 1)[0]).strip():
+                part = part.split(":", 1)[1]
+            return re.sub(r"\s+", " ", part).strip(" :-–—")
+    return video_title.strip()
+
+
+_SERIES_HINT = re.compile(r"\b(season\s*\d+|series|episode|docuseries|miniseries|anime)\b", re.I)
+
+
+def looks_like_series(video_title: str) -> bool:
+    return bool(_SERIES_HINT.search(video_title))
+
+
+async def tmdb_media_type(session, api_key: str | None, video_title: str) -> str:
+    """Return 'movie', 'tv' or 'unknown' for a YouTube trailer title."""
+    if looks_like_series(video_title):
+        return "tv"
+    if not api_key:
+        return "unknown"
+    query = guess_title(video_title)
+    if len(query) < 2:
+        return "unknown"
+    data = await tmdb_get(session, api_key, "/search/multi", query=query,
+                          include_adult="false", language="en-US", page=1)
+    for result in data.get("results", []):
+        if result.get("media_type") in ("movie", "tv"):
+            return result["media_type"]
+    return "unknown"

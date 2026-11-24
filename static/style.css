@@ -24,12 +24,10 @@ code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-si
 }
 .brand { color: var(--text); font-weight: 700; display: flex; align-items: center; gap: 10px; letter-spacing: .01em; }
 .brand:hover { text-decoration: none; }
-.mark {
-  width: 22px; height: 22px; border-radius: 6px; background: var(--accent); position: relative;
-}
-.mark::after {
-  content: ""; position: absolute; left: 8px; top: 5px;
-  border-left: 8px solid var(--accent-ink); border-top: 6px solid transparent; border-bottom: 6px solid transparent;
+.brand .logo { width: 32px; height: 32px; border-radius: 9px; }
+.hero-logo {
+  width: 96px; height: 96px; border-radius: 24px; margin-bottom: 20px; display: block;
+  box-shadow: 0 12px 40px rgba(242, 181, 68, .18);
 }
 nav { display: flex; align-items: center; gap: 20px; }
 nav a { color: var(--text); }

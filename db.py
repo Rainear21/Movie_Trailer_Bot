@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS guilds (
     exclude_keywords TEXT NOT NULL,
     skip_shorts      INTEGER NOT NULL DEFAULT 1,
     use_tmdb         INTEGER NOT NULL DEFAULT 1,
+    movies_only      INTEGER NOT NULL DEFAULT 1,
     configured_at    TEXT,
     last_error       TEXT
 );
@@ -29,7 +30,8 @@ CREATE TABLE IF NOT EXISTS videos (
     published     TEXT,
     discovered_at TEXT NOT NULL,
     seeded        INTEGER NOT NULL,
-    release_date  TEXT
+    release_date  TEXT,
+    media_type    TEXT
 );
 CREATE INDEX IF NOT EXISTS videos_discovered ON videos(discovered_at);
 CREATE TABLE IF NOT EXISTS posts (
@@ -70,14 +72,28 @@ class Database:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.defaults = defaults
+
+    def _migrate(self) -> None:
+        """Add columns introduced after the first release to existing databases."""
+        added = {
+            "guilds": [("movies_only", "INTEGER NOT NULL DEFAULT 1")],
+            "videos": [("media_type", "TEXT")],
+        }
+        for table, columns in added.items():
+            existing = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+            for name, decl in columns:
+                if name not in existing:
+                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+        self.conn.commit()
 
     # ------------------------------------------------------------------ guild settings
     def _guild_row_to_dict(self, row) -> dict:
         d = dict(row)
         for key in ("youtube_channels", "include_keywords", "exclude_keywords"):
             d[key] = json.loads(d[key])
-        for key in ("enabled", "skip_shorts", "use_tmdb"):
+        for key in ("enabled", "skip_shorts", "use_tmdb", "movies_only"):
             d[key] = bool(d[key])
         return d
 
@@ -91,7 +107,7 @@ class Database:
             "include_keywords": list(self.defaults["include_keywords"]),
             "exclude_keywords": list(self.defaults["exclude_keywords"]),
             "skip_shorts": bool(self.defaults.get("skip_shorts", True)),
-            "use_tmdb": True, "configured_at": None, "last_error": None,
+            "use_tmdb": True, "movies_only": True, "configured_at": None, "last_error": None,
         }
 
     def save_guild(self, settings: dict) -> None:
@@ -106,17 +122,20 @@ class Database:
             settings["configured_at"] = old["configured_at"]
         self.conn.execute(
             """INSERT INTO guilds (guild_id, channel_id, enabled, ping_role_id, youtube_channels,
-                   include_keywords, exclude_keywords, skip_shorts, use_tmdb, configured_at, last_error)
-               VALUES (?,?,?,?,?,?,?,?,?,?,NULL)
+                   include_keywords, exclude_keywords, skip_shorts, use_tmdb, movies_only,
+                   configured_at, last_error)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL)
                ON CONFLICT(guild_id) DO UPDATE SET channel_id=excluded.channel_id,
                    enabled=excluded.enabled, ping_role_id=excluded.ping_role_id,
                    youtube_channels=excluded.youtube_channels, include_keywords=excluded.include_keywords,
                    exclude_keywords=excluded.exclude_keywords, skip_shorts=excluded.skip_shorts,
-                   use_tmdb=excluded.use_tmdb, configured_at=excluded.configured_at, last_error=NULL""",
+                   use_tmdb=excluded.use_tmdb, movies_only=excluded.movies_only,
+                   configured_at=excluded.configured_at, last_error=NULL""",
             (settings["guild_id"], settings["channel_id"], int(settings["enabled"]),
              settings["ping_role_id"], json.dumps(settings["youtube_channels"]),
              json.dumps(settings["include_keywords"]), json.dumps(settings["exclude_keywords"]),
-             int(settings["skip_shorts"]), int(settings["use_tmdb"]), settings["configured_at"]))
+             int(settings["skip_shorts"]), int(settings["use_tmdb"]), int(settings["movies_only"]),
+             settings["configured_at"]))
         self.conn.commit()
 
     def set_guild_error(self, guild_id: int, error: str | None) -> None:
@@ -140,12 +159,12 @@ class Database:
         self.conn.commit()
 
     # ------------------------------------------------------------------ discovery
-    def record_trailers(self, trailers, max_age_days: int) -> int:
-        """Store newly found trailers. Returns how many were new and postable."""
+    def record_trailers(self, trailers, max_age_days: int) -> list[dict]:
+        """Store newly found trailers. Returns the new, postable ones."""
         initialized = {r[0] for r in self.conn.execute("SELECT source_key FROM sources")}
         cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
         found_at = now_iso()
-        fresh = 0
+        fresh: list[dict] = []
         for t in trailers:
             row = self.conn.execute("SELECT sources FROM videos WHERE video_id=?",
                                     (t.video_id,)).fetchone()
@@ -155,19 +174,29 @@ class Database:
                     srcs.add(t.source_key)
                     self.conn.execute("UPDATE videos SET sources=? WHERE video_id=?",
                                       (json.dumps(sorted(srcs)), t.video_id))
+                    if t.source_key == "tmdb":  # TMDB only lists movies
+                        self.conn.execute("UPDATE videos SET media_type='movie' WHERE video_id=?",
+                                          (t.video_id,))
                 continue
             # First time we see a source, its back catalogue is recorded but never posted.
             seeded = t.source_key not in initialized or (t.published is not None and t.published < cutoff)
+            media_type = "movie" if t.source_key == "tmdb" else None
             self.conn.execute(
-                "INSERT INTO videos VALUES (?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO videos (video_id, title, url, source_name, sources, published, discovered_at,"
+                " seeded, release_date, media_type) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (t.video_id, t.title, t.url, t.source_name, json.dumps([t.source_key]),
                  t.published.isoformat(timespec="seconds") if t.published else None,
-                 found_at, int(seeded), t.extra.get("release_date")))
-            fresh += not seeded
+                 found_at, int(seeded), t.extra.get("release_date"), media_type))
+            if not seeded:
+                fresh.append({"video_id": t.video_id, "title": t.title, "media_type": media_type})
         for key in {t.source_key for t in trailers} - initialized:
             self.conn.execute("INSERT OR IGNORE INTO sources VALUES (?,?)", (key, found_at))
         self.conn.commit()
         return fresh
+
+    def set_media_type(self, video_id: str, media_type: str) -> None:
+        self.conn.execute("UPDATE videos SET media_type=? WHERE video_id=?", (media_type, video_id))
+        self.conn.commit()
 
     def candidates_for(self, guild: dict, window_hours: int = 48) -> list[dict]:
         since = max(guild["configured_at"] or now_iso(), now_iso(-timedelta(hours=window_hours)))

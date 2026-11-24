@@ -87,6 +87,11 @@
         <input type="checkbox" name="skip_shorts" {{ "checked" if settings.skip_shorts }}>
         <span>Skip YouTube Shorts</span>
       </label>
+      <label class="switch">
+        <input type="checkbox" name="movies_only" {{ "checked" if settings.movies_only }}>
+        <span>Movies only - skip TV series trailers
+          {% if not tmdb_available %}<em class="muted">(without TMDB, only titles that mention a season or series are caught)</em>{% endif %}</span>
+      </label>
       <label class="switch {{ '' if tmdb_available else 'disabled' }}">
         <input type="checkbox" name="use_tmdb" {{ "checked" if settings.use_tmdb and tmdb_available }} {{ "" if tmdb_available else "disabled" }}>
         <span>Also post official trailers listed on TMDB

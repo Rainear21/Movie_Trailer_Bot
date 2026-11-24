@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+<defs>
+  <radialGradient id="bg" cx="50%" cy="45%" r="70%">
+    <stop offset="0" stop-color="#262a38"/><stop offset="1" stop-color="#0b0c10"/>
+  </radialGradient>
+  <linearGradient id="amber" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#f9cd6a"/><stop offset="1" stop-color="#e79b2a"/>
+  </linearGradient>
+  <linearGradient id="screen" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#1b1e28"/><stop offset="1" stop-color="#0f1116"/>
+  </linearGradient>
+  <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+    <feGaussianBlur stdDeviation="28"/>
+  </filter>
+</defs>
+<rect width="1024" height="1024" fill="url(#bg)"/>
+<g transform="translate(512 512) scale(1.1) translate(-512 -512)">
+<rect x="212" y="282" width="600" height="460" rx="52" fill="#f2b544" opacity=".35" filter="url(#glow)"/>
+<rect x="212" y="282" width="600" height="460" rx="52" fill="url(#amber)"/>
+<g fill="#14161d"><rect x="247" y="303" width="40" height="28" rx="7"/><rect x="317" y="303" width="40" height="28" rx="7"/><rect x="387" y="303" width="40" height="28" rx="7"/><rect x="457" y="303" width="40" height="28" rx="7"/><rect x="527" y="303" width="40" height="28" rx="7"/><rect x="597" y="303" width="40" height="28" rx="7"/><rect x="667" y="303" width="40" height="28" rx="7"/><rect x="737" y="303" width="40" height="28" rx="7"/><rect x="247" y="693" width="40" height="28" rx="7"/><rect x="317" y="693" width="40" height="28" rx="7"/><rect x="387" y="693" width="40" height="28" rx="7"/><rect x="457" y="693" width="40" height="28" rx="7"/><rect x="527" y="693" width="40" height="28" rx="7"/><rect x="597" y="693" width="40" height="28" rx="7"/><rect x="667" y="693" width="40" height="28" rx="7"/><rect x="737" y="693" width="40" height="28" rx="7"/></g>
+<rect x="252" y="352" width="520" height="320" rx="22" fill="url(#screen)"/>
+<path d="M468 438 L468 586 L598 512 Z" fill="url(#amber)" stroke="url(#amber)" stroke-width="22" stroke-linejoin="round"/>
+<path d="M812 214 C818 252 830 264 868 270 C830 276 818 288 812 326 C806 288 794 276 756 270 C794 264 806 252 812 214 Z" fill="#ffe3a3"/>
+</g>
+</svg>

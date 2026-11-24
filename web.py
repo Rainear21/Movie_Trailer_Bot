@@ -25,6 +25,7 @@ jinja = Environment(loader=FileSystemLoader(BASE / "templates"),
 
 def render(request: web.Request, template: str, status: int = 200, **ctx) -> web.Response:
     ctx.setdefault("user", request.get("user"))
+    ctx.setdefault("public_url", request.app["bot"].public_url)
     ctx.setdefault("bot_name", request.app["bot"].user.name if request.app["bot"].user else "Trailer Bot")
     html = jinja.get_template(template).render(**ctx)
     return web.Response(text=html, content_type="text/html", status=status)
@@ -252,6 +253,7 @@ async def guild_save(request: web.Request):
         exclude_keywords=parse_keywords(form.get("exclude_keywords", "")),
         skip_shorts=form.get("skip_shorts") == "on",
         use_tmdb=form.get("use_tmdb") == "on",
+        movies_only=form.get("movies_only") == "on",
     )
     bot.db.save_guild(settings)
     raise web.HTTPFound(back + "?notice=saved")
