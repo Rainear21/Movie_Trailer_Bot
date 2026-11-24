@@ -1,8 +1,24 @@
+# Runs the trailer bot and its dashboard on port 8080.
+#
+# Every `docker compose up -d` downloads the latest code from GitHub and rebuilds,
+# so updating the bot is just running that command again. Your settings are kept
+# in the "trailerbot-data" volume and survive updates.
+#
+# All you need on the server is this file and a filled-in .env next to it.
+
 services:
   trailerbot:
-    build: .
+    build:
+      context: https://github.com/Rainear21/Movie_Trailer_Bot.git#main
+      # To build from a local copy of the code instead, use:  context: .
+    pull_policy: build          # rebuild from the latest code on every `up`
+    image: movie-trailer-bot:latest
+    container_name: movie-trailer-bot
     restart: unless-stopped
     env_file: .env
+    environment:
+      PORT: "8080"
+      DATA_DIR: /data
     ports:
       - "8080:8080"
     volumes:

@@ -43,27 +43,27 @@ as environment variables on the host, and set `PUBLIC_URL` to the host's https a
 
 ### Option A: Any Linux server with Docker (VPS, home server, Raspberry Pi)
 
-`docker-compose.prod.yml` runs the bot behind [Caddy](https://caddyserver.com), which
-serves the dashboard over HTTPS and renews the certificate on its own.
-
-1. Point your domain (or a subdomain like `trailers.example.com`) at the server with a DNS **A record**.
-2. Open ports **80** and **443** on the server's firewall.
-3. Set up the config and start it:
+`docker-compose.yml` builds the bot straight from this GitHub repo, so the server
+only needs two files: `docker-compose.yml` and your `.env`.
 
 ```bash
-git clone https://github.com/Rainear21/Movie_Trailer_Bot.git
-cd Movie_Trailer_Bot
-cp .env.example .env    # fill in the Discord settings and DOMAIN
-docker compose -f docker-compose.prod.yml up -d --build
-docker compose -f docker-compose.prod.yml logs -f
+mkdir movie-trailer-bot && cd movie-trailer-bot
+curl -O https://raw.githubusercontent.com/Rainear21/Movie_Trailer_Bot/main/docker-compose.yml
+curl -o .env https://raw.githubusercontent.com/Rainear21/Movie_Trailer_Bot/main/.env.example
+nano .env               # fill in the Discord settings and PUBLIC_URL
+docker compose up -d
+docker compose logs -f
 ```
 
-4. In the Discord Developer Portal, add `https://<your domain>/callback` under OAuth2 → Redirects.
+**To update:** run `docker compose up -d` again. Each time, it downloads the latest
+code from the `main` branch and rebuilds. Settings are kept in the `trailerbot-data` volume.
 
-To update later: `git pull && docker compose -f docker-compose.prod.yml up -d --build`.
+The dashboard is served on port **8080**. Open that port on the server's firewall and
+set `PUBLIC_URL` to the address people will use (for example `http://your-server-ip:8080`),
+then add `<PUBLIC_URL>/callback` under OAuth2 → Redirects in the Discord Developer Portal.
 
-The plain `docker-compose.yml` runs without HTTPS on port 8080, for testing or for
-use behind a proxy you already have.
+Building from GitHub only works while the repo is public. For a private repo,
+clone it and change `context:` in `docker-compose.yml` to `.`.
 
 ### Option B: Railway / Render / Fly.io
 
