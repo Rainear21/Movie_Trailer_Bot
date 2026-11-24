@@ -1,7 +1,8 @@
-"""SQLite storage: per-server settings, discovered trailers, posts, login sessions."""
+"""SQLite storage: per-server settings, trailers, posts, follows, logins and stats."""
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -18,6 +19,13 @@ CREATE TABLE IF NOT EXISTS guilds (
     skip_shorts      INTEGER NOT NULL DEFAULT 1,
     use_tmdb         INTEGER NOT NULL DEFAULT 1,
     movies_only      INTEGER NOT NULL DEFAULT 1,
+    genres_include   TEXT NOT NULL DEFAULT '[]',
+    genres_exclude   TEXT NOT NULL DEFAULT '[]',
+    digest_enabled   INTEGER NOT NULL DEFAULT 0,
+    digest_day       INTEGER NOT NULL DEFAULT 4,
+    digest_hour      INTEGER NOT NULL DEFAULT 10,
+    timezone         TEXT NOT NULL DEFAULT 'America/Los_Angeles',
+    last_digest      TEXT,
     configured_at    TEXT,
     last_error       TEXT
 );
@@ -31,7 +39,8 @@ CREATE TABLE IF NOT EXISTS videos (
     discovered_at TEXT NOT NULL,
     seeded        INTEGER NOT NULL,
     release_date  TEXT,
-    media_type    TEXT
+    media_type    TEXT,
+    genres        TEXT
 );
 CREATE INDEX IF NOT EXISTS videos_discovered ON videos(discovered_at);
 CREATE TABLE IF NOT EXISTS posts (
@@ -40,6 +49,14 @@ CREATE TABLE IF NOT EXISTS posts (
     posted_at TEXT NOT NULL,
     ok        INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY (guild_id, video_id)
+);
+CREATE INDEX IF NOT EXISTS posts_time ON posts(posted_at);
+CREATE TABLE IF NOT EXISTS follows (
+    guild_id   INTEGER NOT NULL,
+    user_id    INTEGER NOT NULL,
+    keyword    TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (guild_id, user_id, keyword)
 );
 CREATE TABLE IF NOT EXISTS sources (
     source_key     TEXT PRIMARY KEY,
@@ -60,9 +77,37 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 """
 
+# Columns added after the first release: (table, column, declaration).
+MIGRATIONS = [
+    ("guilds", "movies_only", "INTEGER NOT NULL DEFAULT 1"),
+    ("guilds", "genres_include", "TEXT NOT NULL DEFAULT '[]'"),
+    ("guilds", "genres_exclude", "TEXT NOT NULL DEFAULT '[]'"),
+    ("guilds", "digest_enabled", "INTEGER NOT NULL DEFAULT 0"),
+    ("guilds", "digest_day", "INTEGER NOT NULL DEFAULT 4"),
+    ("guilds", "digest_hour", "INTEGER NOT NULL DEFAULT 10"),
+    ("guilds", "timezone", "TEXT NOT NULL DEFAULT 'America/Los_Angeles'"),
+    ("guilds", "last_digest", "TEXT"),
+    ("videos", "media_type", "TEXT"),
+    ("videos", "genres", "TEXT"),
+]
+
+# Settings a server admin can change: name -> kind.
+SETTINGS = {
+    "channel_id": "int", "enabled": "bool", "ping_role_id": "int",
+    "youtube_channels": "json", "include_keywords": "json", "exclude_keywords": "json",
+    "skip_shorts": "bool", "use_tmdb": "bool", "movies_only": "bool",
+    "genres_include": "json", "genres_exclude": "json",
+    "digest_enabled": "bool", "digest_day": "int", "digest_hour": "int", "timezone": "str",
+}
+MAX_FOLLOWS_PER_USER = 25
+
 
 def now_iso(delta: timedelta = timedelta()) -> str:
     return (datetime.now(timezone.utc) + delta).isoformat(timespec="seconds")
+
+
+def follow_matches(keyword: str, text: str) -> bool:
+    return re.search(r"(?<!\w)" + re.escape(keyword) + r"(?!\w)", text, re.I) is not None
 
 
 class Database:
@@ -71,30 +116,32 @@ class Database:
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.executescript(SCHEMA)
         self._migrate()
+        self.conn.executescript(SCHEMA)
         self.defaults = defaults
 
     def _migrate(self) -> None:
         """Add columns introduced after the first release to existing databases."""
-        added = {
-            "guilds": [("movies_only", "INTEGER NOT NULL DEFAULT 1")],
-            "videos": [("media_type", "TEXT")],
-        }
-        for table, columns in added.items():
+        tables = {r[0] for r in self.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        for table, name, decl in MIGRATIONS:
+            if table not in tables:
+                continue  # brand-new database; SCHEMA creates it with every column
             existing = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
-            for name, decl in columns:
-                if name not in existing:
-                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+            if name not in existing:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
         self.conn.commit()
+
+    def _count(self, sql: str, *args) -> int:
+        return self.conn.execute(sql, args).fetchone()[0] or 0
 
     # ------------------------------------------------------------------ guild settings
     def _guild_row_to_dict(self, row) -> dict:
         d = dict(row)
-        for key in ("youtube_channels", "include_keywords", "exclude_keywords"):
-            d[key] = json.loads(d[key])
-        for key in ("enabled", "skip_shorts", "use_tmdb", "movies_only"):
-            d[key] = bool(d[key])
+        for key, kind in SETTINGS.items():
+            if kind == "json":
+                d[key] = json.loads(d[key])
+            elif kind == "bool":
+                d[key] = bool(d[key])
         return d
 
     def get_guild(self, guild_id: int) -> dict:
@@ -107,7 +154,10 @@ class Database:
             "include_keywords": list(self.defaults["include_keywords"]),
             "exclude_keywords": list(self.defaults["exclude_keywords"]),
             "skip_shorts": bool(self.defaults.get("skip_shorts", True)),
-            "use_tmdb": True, "movies_only": True, "configured_at": None, "last_error": None,
+            "use_tmdb": True, "movies_only": True, "genres_include": [], "genres_exclude": [],
+            "digest_enabled": False, "digest_day": 4, "digest_hour": 10,
+            "timezone": self.defaults.get("default_timezone", "America/Los_Angeles"),
+            "last_digest": None, "configured_at": None, "last_error": None,
         }
 
     def save_guild(self, settings: dict) -> None:
@@ -117,29 +167,29 @@ class Database:
         if (settings["channel_id"] != old["channel_id"]
                 or (settings["enabled"] and not old["enabled"])
                 or not old["configured_at"]):
-            settings["configured_at"] = now_iso()
+            configured_at = now_iso()
         else:
-            settings["configured_at"] = old["configured_at"]
+            configured_at = old["configured_at"]
+
+        values = []
+        for key, kind in SETTINGS.items():
+            v = settings[key]
+            values.append(json.dumps(v) if kind == "json" else int(v) if kind == "bool" else v)
+        cols = list(SETTINGS) + ["configured_at"]
         self.conn.execute(
-            """INSERT INTO guilds (guild_id, channel_id, enabled, ping_role_id, youtube_channels,
-                   include_keywords, exclude_keywords, skip_shorts, use_tmdb, movies_only,
-                   configured_at, last_error)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL)
-               ON CONFLICT(guild_id) DO UPDATE SET channel_id=excluded.channel_id,
-                   enabled=excluded.enabled, ping_role_id=excluded.ping_role_id,
-                   youtube_channels=excluded.youtube_channels, include_keywords=excluded.include_keywords,
-                   exclude_keywords=excluded.exclude_keywords, skip_shorts=excluded.skip_shorts,
-                   use_tmdb=excluded.use_tmdb, movies_only=excluded.movies_only,
-                   configured_at=excluded.configured_at, last_error=NULL""",
-            (settings["guild_id"], settings["channel_id"], int(settings["enabled"]),
-             settings["ping_role_id"], json.dumps(settings["youtube_channels"]),
-             json.dumps(settings["include_keywords"]), json.dumps(settings["exclude_keywords"]),
-             int(settings["skip_shorts"]), int(settings["use_tmdb"]), int(settings["movies_only"]),
-             settings["configured_at"]))
+            f"""INSERT INTO guilds (guild_id, {", ".join(cols)}, last_error)
+                VALUES (?, {", ".join("?" * len(cols))}, NULL)
+                ON CONFLICT(guild_id) DO UPDATE SET
+                {", ".join(f"{c}=excluded.{c}" for c in cols)}, last_error=NULL""",
+            (settings["guild_id"], *values, configured_at))
         self.conn.commit()
 
     def set_guild_error(self, guild_id: int, error: str | None) -> None:
         self.conn.execute("UPDATE guilds SET last_error=? WHERE guild_id=?", (error, guild_id))
+        self.conn.commit()
+
+    def set_last_digest(self, guild_id: int, local_date: str) -> None:
+        self.conn.execute("UPDATE guilds SET last_digest=? WHERE guild_id=?", (local_date, guild_id))
         self.conn.commit()
 
     def active_guilds(self) -> list[dict]:
@@ -174,28 +224,32 @@ class Database:
                     srcs.add(t.source_key)
                     self.conn.execute("UPDATE videos SET sources=? WHERE video_id=?",
                                       (json.dumps(sorted(srcs)), t.video_id))
-                    if t.source_key == "tmdb":  # TMDB only lists movies
-                        self.conn.execute("UPDATE videos SET media_type='movie' WHERE video_id=?",
-                                          (t.video_id,))
+                    if t.source_key == "tmdb":  # TMDB only lists movies, and knows the genres
+                        self.conn.execute("UPDATE videos SET media_type='movie', genres=? WHERE video_id=?",
+                                          (json.dumps(t.extra.get("genres", [])), t.video_id))
                 continue
             # First time we see a source, its back catalogue is recorded but never posted.
             seeded = t.source_key not in initialized or (t.published is not None and t.published < cutoff)
-            media_type = "movie" if t.source_key == "tmdb" else None
+            is_tmdb = t.source_key == "tmdb"
             self.conn.execute(
                 "INSERT INTO videos (video_id, title, url, source_name, sources, published, discovered_at,"
-                " seeded, release_date, media_type) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                " seeded, release_date, media_type, genres) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (t.video_id, t.title, t.url, t.source_name, json.dumps([t.source_key]),
                  t.published.isoformat(timespec="seconds") if t.published else None,
-                 found_at, int(seeded), t.extra.get("release_date"), media_type))
+                 found_at, int(seeded), t.extra.get("release_date"),
+                 "movie" if is_tmdb else None,
+                 json.dumps(t.extra.get("genres", [])) if is_tmdb else None))
             if not seeded:
-                fresh.append({"video_id": t.video_id, "title": t.title, "media_type": media_type})
+                fresh.append({"video_id": t.video_id, "title": t.title,
+                              "media_type": "movie" if is_tmdb else None})
         for key in {t.source_key for t in trailers} - initialized:
             self.conn.execute("INSERT OR IGNORE INTO sources VALUES (?,?)", (key, found_at))
         self.conn.commit()
         return fresh
 
-    def set_media_type(self, video_id: str, media_type: str) -> None:
-        self.conn.execute("UPDATE videos SET media_type=? WHERE video_id=?", (media_type, video_id))
+    def set_classification(self, video_id: str, media_type: str, genres: list[int]) -> None:
+        self.conn.execute("UPDATE videos SET media_type=?, genres=? WHERE video_id=?",
+                          (media_type, json.dumps(genres), video_id))
         self.conn.commit()
 
     def candidates_for(self, guild: dict, window_hours: int = 48) -> list[dict]:
@@ -210,6 +264,7 @@ class Database:
         for r in rows:
             d = dict(r)
             d["sources"] = set(json.loads(d["sources"]))
+            d["genres"] = json.loads(d["genres"]) if d.get("genres") else []
             out.append(d)
         return out
 
@@ -232,6 +287,78 @@ class Database:
         self.conn.execute("DELETE FROM videos WHERE discovered_at < ?", (cutoff,))
         self.conn.execute("DELETE FROM sessions WHERE expires_at < ?", (now_iso(),))
         self.conn.commit()
+
+    # ------------------------------------------------------------------ follows
+    def add_follow(self, guild_id: int, user_id: int, keyword: str) -> str:
+        """Returns 'added', 'exists' or 'limit'."""
+        if self.conn.execute("SELECT 1 FROM follows WHERE guild_id=? AND user_id=? AND keyword=?",
+                             (guild_id, user_id, keyword)).fetchone():
+            return "exists"
+        if self._count("SELECT COUNT(*) FROM follows WHERE guild_id=? AND user_id=?",
+                       guild_id, user_id) >= MAX_FOLLOWS_PER_USER:
+            return "limit"
+        self.conn.execute("INSERT INTO follows VALUES (?,?,?,?)", (guild_id, user_id, keyword, now_iso()))
+        self.conn.commit()
+        return "added"
+
+    def remove_follow(self, guild_id: int, user_id: int, keyword: str) -> bool:
+        cur = self.conn.execute("DELETE FROM follows WHERE guild_id=? AND user_id=? AND keyword=?",
+                                (guild_id, user_id, keyword))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def user_follows(self, guild_id: int, user_id: int) -> list[str]:
+        return [r[0] for r in self.conn.execute(
+            "SELECT keyword FROM follows WHERE guild_id=? AND user_id=? ORDER BY keyword",
+            (guild_id, user_id))]
+
+    def followers_matching(self, guild_id: int, text: str) -> dict[int, list[str]]:
+        """user_id -> the keywords of theirs that match this text."""
+        out: dict[int, list[str]] = {}
+        for r in self.conn.execute("SELECT user_id, keyword FROM follows WHERE guild_id=?", (guild_id,)):
+            if follow_matches(r["keyword"], text):
+                out.setdefault(r["user_id"], []).append(r["keyword"])
+        return out
+
+    def follow_summary(self, guild_id: int, top: int = 8) -> dict:
+        people = self._count("SELECT COUNT(DISTINCT user_id) FROM follows WHERE guild_id=?", guild_id)
+        rows = self.conn.execute(
+            """SELECT keyword, COUNT(*) n FROM follows WHERE guild_id=?
+               GROUP BY keyword ORDER BY n DESC, keyword LIMIT ?""", (guild_id, top)).fetchall()
+        return {"people": people, "top": [dict(r) for r in rows]}
+
+    # ------------------------------------------------------------------ owner stats
+    def stats(self) -> dict:
+        def since(**kw):
+            return now_iso(-timedelta(**kw))
+        return {
+            "configured": self._count("SELECT COUNT(*) FROM guilds WHERE channel_id IS NOT NULL"),
+            "active": self._count("SELECT COUNT(*) FROM guilds WHERE enabled=1 AND channel_id IS NOT NULL"),
+            "digest": self._count("SELECT COUNT(*) FROM guilds WHERE digest_enabled=1 AND enabled=1"
+                                  " AND channel_id IS NOT NULL"),
+            "posts_24h": self._count("SELECT COUNT(*) FROM posts WHERE ok=1 AND posted_at > ?", since(days=1)),
+            "posts_7d": self._count("SELECT COUNT(*) FROM posts WHERE ok=1 AND posted_at > ?", since(days=7)),
+            "posts_30d": self._count("SELECT COUNT(*) FROM posts WHERE ok=1 AND posted_at > ?", since(days=30)),
+            "failed_7d": self._count("SELECT COUNT(*) FROM posts WHERE ok=0 AND posted_at > ?", since(days=7)),
+            "trailers_7d": self._count("SELECT COUNT(*) FROM videos WHERE seeded=0 AND discovered_at > ?",
+                                       since(days=7)),
+            "follows": self._count("SELECT COUNT(*) FROM follows"),
+            "followers": self._count("SELECT COUNT(DISTINCT user_id) FROM follows"),
+            "sessions": self._count("SELECT COUNT(*) FROM sessions WHERE expires_at > ?", now_iso()),
+            "top_sources": [dict(r) for r in self.conn.execute(
+                """SELECT v.source_name, COUNT(*) n FROM posts p JOIN videos v ON v.video_id=p.video_id
+                   WHERE p.ok=1 AND p.posted_at > ? GROUP BY v.source_name ORDER BY n DESC LIMIT 8""",
+                (since(days=30),))],
+            "recent_trailers": [dict(r) for r in self.conn.execute(
+                """SELECT title, url, source_name, discovered_at, media_type,
+                          (SELECT COUNT(*) FROM posts p WHERE p.video_id=v.video_id AND p.ok=1) AS servers
+                   FROM videos v WHERE seeded=0 ORDER BY discovered_at DESC LIMIT 12""")],
+            "posts_by_guild": {r[0]: r[1] for r in self.conn.execute(
+                "SELECT guild_id, COUNT(*) FROM posts WHERE ok=1 AND posted_at > ? GROUP BY guild_id",
+                (since(days=30),))},
+            "follows_by_guild": {r[0]: r[1] for r in self.conn.execute(
+                "SELECT guild_id, COUNT(*) FROM follows GROUP BY guild_id")},
+        }
 
     # ------------------------------------------------------------------ web sessions
     def create_session(self, sid, user, guilds, csrf, days: int = 7) -> None:

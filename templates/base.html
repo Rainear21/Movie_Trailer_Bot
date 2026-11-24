@@ -19,6 +19,7 @@
     <nav>
       {% if user %}
         <a href="/dashboard">Servers</a>
+        {% if is_owner %}<a href="/admin">Owner</a>{% endif %}
         <span class="me">
           {% if user.avatar %}<img src="https://cdn.discordapp.com/avatars/{{ user.user_id }}/{{ user.avatar }}.png?size=64" alt="">{% endif %}
           {{ user.username }}

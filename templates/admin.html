@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% set notices = {
+  "check_started": "Check started - refresh in a few seconds to see the results.",
+  "busy": "A check is already running."
+} %}
+{% block title %}Owner · {{ bot_name }}{% endblock %}
+{% block content %}
+<div class="admin-head">
+  <div>
+    <h1 class="page-title">Owner dashboard</h1>
+    <p class="muted">Only you can see this page.</p>
+  </div>
+  <div class="admin-actions">
+    <span class="badge {{ 'ok' if healthy else 'bad' }}">{{ "Healthy" if healthy else "Needs attention" }}</span>
+    <form method="post" action="/admin/check">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button class="btn small" type="submit">Run check now</button>
+    </form>
+  </div>
+</div>
+
+{% if notice in notices %}<div class="banner ok">{{ notices[notice] }}</div>{% endif %}
+{% if not tmdb %}<div class="banner bad">TMDB_API_KEY isn't set: search, movies-only, genres and weekly releases are limited or off.</div>{% endif %}
+
+<div class="stats">
+  <div class="stat"><span class="stat-label">Servers</span><strong>{{ servers | length }}</strong>
+    <span class="muted small">{{ "{:,}".format(member_total) }} members</span></div>
+  <div class="stat"><span class="stat-label">Active</span><strong>{{ stats.active }}</strong>
+    <span class="muted small">{{ stats.digest }} weekly lists</span></div>
+  <div class="stat"><span class="stat-label">Posts (7d)</span><strong>{{ stats.posts_7d }}</strong>
+    <span class="muted small">{{ stats.posts_24h }} today</span></div>
+  <div class="stat"><span class="stat-label">Trailers (7d)</span><strong>{{ stats.trailers_7d }}</strong>
+    <span class="muted small">new ones found</span></div>
+  <div class="stat"><span class="stat-label">Follows</span><strong>{{ stats.follows }}</strong>
+    <span class="muted small">by {{ stats.followers }} people</span></div>
+  <div class="stat"><span class="stat-label">Failed (7d)</span><strong>{{ stats.failed_7d }}</strong>
+    <span class="muted small">posts blocked</span></div>
+</div>
+
+<div class="admin-grid">
+  <section class="card">
+    <h2>Last check</h2>
+    {% if last_check %}
+      {% if last_check.ok %}
+        <dl class="facts">
+          <dt>When</dt><dd>{{ last_check.at | ago }}</dd>
+          <dt>Took</dt><dd>{{ last_check.seconds }}s</dd>
+          <dt>Sources</dt><dd>{{ last_check.sources }}</dd>
+          <dt>Videos seen</dt><dd>{{ last_check.videos }}</dd>
+          <dt>New trailers</dt><dd>{{ last_check.new }}</dd>
+          <dt>Posts sent</dt><dd>{{ last_check.posted }}</dd>
+        </dl>
+      {% else %}
+        <p class="bad-text">Failed {{ last_check.at | ago }}: {{ last_check.error }}</p>
+      {% endif %}
+    {% else %}
+      <p class="muted small">No check has finished since the bot started.</p>
+    {% endif %}
+    <p class="muted small">Checks every {{ poll_minutes }} min{% if next_check %} · next {{ next_check | until }}{% endif %} · running since {{ started_at | ago }}</p>
+  </section>
+
+  <section class="card">
+    <h2>Needs attention</h2>
+    {% if errors %}
+      <ul class="plain">
+        {% for s in errors %}<li><strong>{{ s.name }}</strong><span class="muted small">{{ s.error }}</span></li>{% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted small">No server has a posting problem.</p>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <h2>Top sources (30 days)</h2>
+    {% if stats.top_sources %}
+      <ul class="bars">
+        {% set top = stats.top_sources[0].n %}
+        {% for src in stats.top_sources %}
+          <li><span>{{ src.source_name }}</span><progress value="{{ src.n }}" max="{{ top }}"></progress><span class="muted small">{{ src.n }}</span></li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted small">Nothing posted yet.</p>
+    {% endif %}
+  </section>
+</div>
+
+<section class="card wide">
+  <h2>Latest trailers found</h2>
+  {% if stats.recent_trailers %}
+  <table class="table">
+    <thead><tr><th>Trailer</th><th>Source</th><th>Type</th><th>Found</th><th class="num">Servers</th></tr></thead>
+    <tbody>
+      {% for t in stats.recent_trailers %}
+      <tr>
+        <td><a href="{{ t.url }}" target="_blank" rel="noopener">{{ t.title }}</a></td>
+        <td class="muted">{{ t.source_name }}</td>
+        <td class="muted">{{ {"movie": "Movie", "tv": "Series"}.get(t.media_type, "?") }}</td>
+        <td class="muted">{{ t.discovered_at | ago }}</td>
+        <td class="num">{{ t.servers }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <p class="muted small">No new trailers found yet.</p>
+  {% endif %}
+</section>
+
+<section class="card wide">
+  <h2>Servers</h2>
+  <table class="table">
+    <thead><tr><th>Server</th><th class="num">Members</th><th>Posting to</th><th class="num">Posts (30d)</th><th class="num">Follows</th><th>Weekly</th></tr></thead>
+    <tbody>
+      {% for s in servers %}
+      <tr>
+        <td class="server-cell">
+          {% if s.icon %}<img src="{{ s.icon }}" alt="">{% else %}<span class="initials">{{ s.name[:2] }}</span>{% endif %}
+          {{ s.name }}{% if s.error %} <span class="badge bad">error</span>{% endif %}
+        </td>
+        <td class="num">{{ "{:,}".format(s.members) }}</td>
+        <td class="{{ '' if s.active else 'muted' }}">{{ s.status }}</td>
+        <td class="num">{{ s.posts_30d }}</td>
+        <td class="num">{{ s.follows }}</td>
+        <td class="muted">{{ "On" if s.digest else "-" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

@@ -10,7 +10,7 @@ import logging
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 log = logging.getLogger("trailerbot.sources")
 
@@ -27,6 +27,13 @@ _CHANNEL_ID_PATTERNS = [
     re.compile(r'"channelId":"(UC[\w-]{22})"'),
 ]
 TMDB_API = "https://api.themoviedb.org/3"
+TMDB_POSTER = "https://image.tmdb.org/t/p/w342"
+GENRES = {
+    28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy", 80: "Crime",
+    99: "Documentary", 18: "Drama", 10751: "Family", 14: "Fantasy", 36: "History",
+    27: "Horror", 10402: "Music", 9648: "Mystery", 10749: "Romance", 878: "Science Fiction",
+    53: "Thriller", 10752: "War", 37: "Western",
+}
 
 
 @dataclass
@@ -178,7 +185,8 @@ def parse_tmdb_videos(movie: dict, videos: list[dict], official_only: bool) -> l
             source_key="tmdb",
             source_name="TMDB",
             published=parse_iso(v.get("published_at")),
-            extra={"release_date": movie.get("release_date"), "tmdb_id": movie.get("id")},
+            extra={"release_date": movie.get("release_date"), "tmdb_id": movie.get("id"),
+                   "genres": movie.get("genre_ids", [])},
         ))
     return items
 
@@ -289,18 +297,80 @@ def looks_like_series(video_title: str) -> bool:
     return bool(_SERIES_HINT.search(video_title))
 
 
-async def tmdb_media_type(session, api_key: str | None, video_title: str) -> str:
-    """Return 'movie', 'tv' or 'unknown' for a YouTube trailer title."""
+async def tmdb_classify(session, api_key: str | None, video_title: str) -> tuple[str, list[int]]:
+    """Return ('movie' | 'tv' | 'unknown', TMDB genre ids) for a YouTube trailer title."""
     if looks_like_series(video_title):
-        return "tv"
+        return "tv", []
     if not api_key:
-        return "unknown"
+        return "unknown", []
     query = guess_title(video_title)
     if len(query) < 2:
-        return "unknown"
+        return "unknown", []
     data = await tmdb_get(session, api_key, "/search/multi", query=query,
                           include_adult="false", language="en-US", page=1)
     for result in data.get("results", []):
         if result.get("media_type") in ("movie", "tv"):
-            return result["media_type"]
-    return "unknown"
+            return result["media_type"], list(result.get("genre_ids", []))
+    return "unknown", []
+
+
+async def tmdb_media_type(session, api_key: str | None, video_title: str) -> str:
+    return (await tmdb_classify(session, api_key, video_title))[0]
+
+
+# --------------------------------------------------------------------------- releases this week
+
+def _regional_release(movie: dict, region: str, start: date, end: date) -> date | None:
+    """Earliest theatrical (limited or wide) release date in `region` within [start, end]."""
+    best = None
+    for country in movie.get("release_dates", {}).get("results", []):
+        if country.get("iso_3166_1") != region:
+            continue
+        for rd in country.get("release_dates", []):
+            if rd.get("type") not in (2, 3):
+                continue
+            try:
+                d = date.fromisoformat((rd.get("release_date") or "")[:10])
+            except ValueError:
+                continue
+            if start <= d <= end and (best is None or d < best):
+                best = d
+    return best
+
+
+async def tmdb_releases_between(session, api_key: str, region: str, start: date, end: date,
+                                limit: int = 20) -> list[dict]:
+    """Movies opening in theaters in `region` between start and end (inclusive), with trailers."""
+    data = await tmdb_get(session, api_key, "/discover/movie", region=region,
+                          with_release_type="2|3", sort_by="popularity.desc",
+                          include_adult="false", language="en-US", page=1,
+                          **{"release_date.gte": start.isoformat(), "release_date.lte": end.isoformat()})
+    sem = asyncio.Semaphore(5)
+
+    async def enrich(m):
+        async with sem:
+            try:
+                details = await tmdb_get(session, api_key, f"/movie/{m['id']}", language="en-US",
+                                         append_to_response="videos,release_dates",
+                                         include_video_language="en,null")
+            except Exception as exc:
+                log.debug("TMDB details for %s failed: %s", m.get("title"), exc)
+                details = {}
+        opens = _regional_release(details, region, start, end)
+        if opens is None:
+            try:
+                opens = date.fromisoformat(m.get("release_date") or "")
+            except ValueError:
+                return None
+            if not start <= opens <= end:
+                return None
+        video = pick_best_trailer(details.get("videos", {}).get("results", []))
+        return {
+            "id": m["id"], "title": m.get("title", "Unknown"), "date": opens,
+            "genres": list(m.get("genre_ids", [])), "popularity": m.get("popularity", 0),
+            "poster": f"{TMDB_POSTER}{m['poster_path']}" if m.get("poster_path") else None,
+            "trailer": f"https://www.youtube.com/watch?v={video['key']}" if video else None,
+        }
+
+    movies = [m for m in await asyncio.gather(*(enrich(m) for m in data.get("results", [])[:limit])) if m]
+    return sorted(movies, key=lambda m: (m["date"], -m["popularity"]))

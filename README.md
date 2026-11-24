@@ -87,6 +87,10 @@ The health check endpoint is `/healthz`.
 | `/trailers stop` | Manage Server | Pause posting |
 | `/trailers check` | Manage Server | Check for new trailers now |
 | `/trailers latest [count]` | Everyone | Recently posted trailers |
+| `/trailers upcoming` | Everyone | Movies coming out in theaters this week (needs TMDB) |
+| `/follow <name>` | Everyone | Get pinged when a trailer for a movie, franchise or studio is posted (e.g. `Dune`, `Star Wars`, `A24`) |
+| `/unfollow <name>` | Everyone | Stop following something |
+| `/following` | Everyone | See what you follow |
 
 The first time the bot starts, slash commands can take a few minutes to show up in Discord.
 
@@ -95,6 +99,37 @@ The first time the bot starts, slash commands can take a few minutes to show up 
 Studio channels like Netflix also post TV series trailers. With **Movies only** turned on
 in the dashboard (the default), the bot looks up each new YouTube trailer on TMDB and skips
 it if it's a series. Without a TMDB key, it only catches titles that mention a season or series.
+
+## Genres
+
+Each server can pick genres to **only** post (e.g. Horror and Sci-Fi) and genres to
+**never** post (e.g. Animation). Genres come from TMDB. When a server picks genres to
+only post, trailers the bot can't match to a movie are skipped.
+
+## Weekly releases
+
+Servers can turn on a weekly post listing the movies opening in theaters over the next
+7 days, with trailer links. They pick the day, time and time zone on the dashboard,
+and the server's genre filters apply. The region comes from `tmdb.region` in `config.json`.
+
+## Follows
+
+Members type `/follow Dune` (or a franchise or studio name). When a trailer whose title or
+studio matches is posted in that server, they're mentioned under the post. Whole-word
+matching is used, so `dune` matches "Dune: Part Three" but not "Dunes". Each person can
+follow up to 25 things per server.
+
+## Owner page and uptime alerts
+
+Log in to the dashboard as the bot's owner and an **Owner** link appears. It shows server
+and member counts, posts, follows, the last trailer check, servers with posting problems,
+top sources, and every server the bot is in. You can also run a check from there. The
+app owner (or team members) in the Developer Portal has access automatically; add more
+people with `OWNER_IDS` in `.env`.
+
+`/healthz` returns HTTP 503 when the bot is disconnected from Discord or trailer checks
+have stopped working. To get an email when that happens, create a free HTTP monitor on
+[UptimeRobot](https://uptimerobot.com) (or similar) pointing at `https://<your domain>/healthz`.
 
 ## How it avoids spam
 

@@ -4,12 +4,18 @@
   "too_many": "You can watch up to 25 YouTube channels.",
   "no_channel": "Pick a channel and save before sending a test post.",
   "forbidden": "The bot isn't allowed to post in that channel. Give it View Channel, Send Messages and Embed Links there.",
-  "send_failed": "Discord rejected the test post. Try again in a moment."
+  "send_failed": "Discord rejected the test post. Try again in a moment.",
+  "digest_no_tmdb": "Weekly releases need a TMDB API key, which isn't set up on this bot.",
+  "digest_no_channel": "Pick a trailer channel and save before posting the weekly list.",
+  "digest_tmdb_failed": "Couldn't load this week's releases from TMDB. Try again in a minute.",
+  "digest_forbidden": "The bot isn't allowed to post in that channel. Give it View Channel, Send Messages and Embed Links there.",
+  "digest_send_failed": "Discord rejected the post. Try again in a moment."
 } %}
 {% set notices = {
   "saved": "Settings saved.",
   "reset": "Studio list reset to the defaults.",
-  "tested": "Test post sent - check your channel."
+  "tested": "Test post sent - check your channel.",
+  "digest_sent": "This week's releases were posted - check your channel."
 } %}
 {% block title %}{{ guild.name }} · {{ bot_name }}{% endblock %}
 {% block content %}
@@ -99,6 +105,55 @@
       </label>
     </section>
 
+    <section class="card">
+      <h2>Genres</h2>
+      {% if not tmdb_available %}<p class="muted small">Genre filters use TMDB, which isn't set up on this bot yet.</p>{% endif %}
+      <p class="label">Only post these genres <em class="muted">(leave all unticked for every genre)</em></p>
+      <div class="pills">
+        {% for id, name in genres %}
+          <label class="pill"><input type="checkbox" name="genres_include" value="{{ id }}" {{ "checked" if id in settings.genres_include }}><span>{{ name }}</span></label>
+        {% endfor %}
+      </div>
+      <small class="muted">When you pick genres here, trailers the bot can't match to a movie are skipped.</small>
+
+      <p class="label spaced">Never post these genres</p>
+      <div class="pills">
+        {% for id, name in genres %}
+          <label class="pill no"><input type="checkbox" name="genres_exclude" value="{{ id }}" {{ "checked" if id in settings.genres_exclude }}><span>{{ name }}</span></label>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Weekly releases</h2>
+      <label class="switch {{ '' if digest_available else 'disabled' }}">
+        <input type="checkbox" name="digest_enabled" {{ "checked" if settings.digest_enabled and digest_available }} {{ "" if digest_available else "disabled" }}>
+        <span>Post a list of movies coming out in theaters each week
+          {% if not digest_available %}<em class="muted">(needs TMDB, which isn't set up on this bot)</em>{% endif %}</span>
+      </label>
+      <div class="row3">
+        <label class="field">
+          <span>Day</span>
+          <select name="digest_day">
+            {% for i, name in days %}<option value="{{ i }}" {{ "selected" if i == settings.digest_day }}>{{ name }}</option>{% endfor %}
+          </select>
+        </label>
+        <label class="field">
+          <span>Time</span>
+          <select name="digest_hour">
+            {% for h, label in hours %}<option value="{{ h }}" {{ "selected" if h == settings.digest_hour }}>{{ label }}</option>{% endfor %}
+          </select>
+        </label>
+        <label class="field">
+          <span>Time zone</span>
+          <select name="timezone">
+            {% for tz, label in timezones %}<option value="{{ tz }}" {{ "selected" if tz == settings.timezone }}>{{ label }}</option>{% endfor %}
+          </select>
+        </label>
+      </div>
+      <small class="muted">Posted in the trailer channel above, covering the next 7 days. Your genre filters apply.</small>
+    </section>
+
     <div class="save-bar"><button class="btn" type="submit">Save changes</button></div>
   </form>
 
@@ -110,6 +165,24 @@
         <input type="hidden" name="csrf" value="{{ csrf }}">
         <button class="btn ghost" type="submit">Send test post</button>
       </form>
+      {% if digest_available %}
+      <form method="post" action="/dashboard/{{ guild.id }}/digest" class="spaced">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button class="btn ghost" type="submit">Post this week's releases now</button>
+      </form>
+      {% endif %}
+    </section>
+
+    <section class="card">
+      <h2>Follows</h2>
+      {% if follows.people %}
+        <p class="muted small">{{ follows.people }} member{{ "s" if follows.people != 1 }} get pinged for:</p>
+        <ul class="chips">
+          {% for f in follows.top %}<li>{{ f.keyword }}{% if f.n > 1 %} · {{ f.n }}{% endif %}</li>{% endfor %}
+        </ul>
+      {% else %}
+        <p class="muted small">Members can type <code>/follow Dune</code> (or a franchise or studio) to get pinged when a matching trailer is posted here.</p>
+      {% endif %}
     </section>
 
     <section class="card">

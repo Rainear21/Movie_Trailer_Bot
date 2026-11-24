@@ -1,17 +1,20 @@
-"""Web dashboard: Discord login, server picker and per-server settings."""
+"""Web dashboard: Discord login, server picker, per-server settings and the owner page."""
 from __future__ import annotations
 
+import asyncio
 import hmac
 import logging
 import secrets
+from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from urllib.parse import urlencode
 
 import discord
 from aiohttp import web
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from sources import normalize_channel_ref
+from sources import GENRES, normalize_channel_ref
 
 BASE = Path(__file__).resolve().parent
 DISCORD_API = "https://discord.com/api/v10"
@@ -19,13 +22,57 @@ MANAGE_GUILD, ADMINISTRATOR = 0x20, 0x8
 SESSION_DAYS = 7
 log = logging.getLogger("trailerbot.web")
 
+TIMEZONES = [
+    ("America/Los_Angeles", "Pacific (Los Angeles)"), ("America/Denver", "Mountain (Denver)"),
+    ("America/Phoenix", "Arizona (Phoenix)"), ("America/Chicago", "Central (Chicago)"),
+    ("America/New_York", "Eastern (New York)"), ("America/Halifax", "Atlantic (Halifax)"),
+    ("America/Sao_Paulo", "Brasilia (Sao Paulo)"), ("UTC", "UTC"),
+    ("Europe/London", "UK (London)"), ("Europe/Paris", "Central Europe (Paris, Berlin)"),
+    ("Europe/Helsinki", "Eastern Europe (Helsinki)"), ("Asia/Kolkata", "India (Kolkata)"),
+    ("Asia/Singapore", "Singapore"), ("Asia/Tokyo", "Japan (Tokyo)"),
+    ("Australia/Sydney", "Australia East (Sydney)"), ("Pacific/Auckland", "New Zealand (Auckland)"),
+]
+DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+HOURS = [(h, f"{(h % 12) or 12} {'AM' if h < 12 else 'PM'}") for h in range(24)]
+
 jinja = Environment(loader=FileSystemLoader(BASE / "templates"),
                     autoescape=select_autoescape(["html"]))
 
 
+def ago(value) -> str:
+    """'3 min ago' style text for a datetime or ISO string."""
+    if not value:
+        return "never"
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value)
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    secs = int((datetime.now(timezone.utc) - value).total_seconds())
+    for unit, size in (("d", 86400), ("h", 3600), ("min", 60)):
+        if secs >= size:
+            return f"{secs // size} {unit} ago"
+    return "just now"
+
+
+def until(value) -> str:
+    if not value:
+        return "soon"
+    secs = int((value - datetime.now(timezone.utc)).total_seconds())
+    if secs <= 60:
+        return "in under a minute"
+    return f"in {secs // 3600} h" if secs >= 3600 else f"in {secs // 60} min"
+
+
+jinja.filters["ago"] = ago
+jinja.filters["until"] = until
+
+
 def render(request: web.Request, template: str, status: int = 200, **ctx) -> web.Response:
-    ctx.setdefault("user", request.get("user"))
-    ctx.setdefault("public_url", request.app["bot"].public_url)
+    bot = request.app["bot"]
+    user = request.get("user")
+    ctx.setdefault("user", user)
+    ctx.setdefault("is_owner", bool(user and user["user_id"] in bot.owner_ids))
+    ctx.setdefault("public_url", bot.public_url)
     ctx.setdefault("bot_name", request.app["bot"].user.name if request.app["bot"].user else "Trailer Bot")
     html = jinja.get_template(template).render(**ctx)
     return web.Response(text=html, content_type="text/html", status=status)
@@ -210,9 +257,31 @@ async def guild_page(request: web.Request):
     return render(request, "guild.html", guild=guild, settings=settings,
                   channels=postable_channels(guild), roles=pingable_roles(guild),
                   sources=sources, recent=bot.db.recent_posts(guild.id, 10),
-                  tmdb_available=bot.tmdb_on, csrf=request["user"]["csrf"],
+                  tmdb_available=bot.tmdb_on, digest_available=bool(bot.tmdb_key),
+                  genres=sorted(GENRES.items(), key=lambda g: g[1]),
+                  days=list(enumerate(DAYS)), hours=HOURS, timezones=timezone_choices(settings["timezone"]),
+                  follows=bot.db.follow_summary(guild.id), csrf=request["user"]["csrf"],
                   defaults=bot.config, notice=request.query.get("notice"),
                   error=request.query.get("error"))
+
+
+def timezone_choices(current: str):
+    choices = list(TIMEZONES)
+    if current and current not in dict(choices):
+        choices.insert(0, (current, current))
+    return choices
+
+
+def parse_int(value, low: int, high: int, default: int) -> int:
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return default
+    return n if low <= n <= high else default
+
+
+def parse_genres(form, field: str) -> list[int]:
+    return sorted({int(v) for v in form.getall(field, []) if v.isdigit() and int(v) in GENRES})
 
 
 def parse_keywords(raw: str) -> list[str]:
@@ -254,6 +323,12 @@ async def guild_save(request: web.Request):
         skip_shorts=form.get("skip_shorts") == "on",
         use_tmdb=form.get("use_tmdb") == "on",
         movies_only=form.get("movies_only") == "on",
+        genres_include=parse_genres(form, "genres_include"),
+        genres_exclude=parse_genres(form, "genres_exclude"),
+        digest_enabled=form.get("digest_enabled") == "on",
+        digest_day=parse_int(form.get("digest_day"), 0, 6, settings["digest_day"]),
+        digest_hour=parse_int(form.get("digest_hour"), 0, 23, settings["digest_hour"]),
+        timezone=valid_timezone(form.get("timezone"), settings["timezone"]),
     )
     bot.db.save_guild(settings)
     raise web.HTTPFound(back + "?notice=saved")
@@ -291,14 +366,94 @@ async def guild_test(request: web.Request):
     raise web.HTTPFound(back + "?notice=tested")
 
 
+def valid_timezone(value: str | None, fallback: str) -> str:
+    try:
+        ZoneInfo(value or "")
+        return value
+    except Exception:
+        return fallback
+
+
+@require_login
+async def guild_digest_now(request: web.Request):
+    bot = request.app["bot"]
+    guild = await authorize_guild(request)
+    form = await request.post()
+    check_csrf(request, form)
+    result = await bot.send_digest(bot.db.get_guild(guild.id))
+    back = f"/dashboard/{guild.id}"
+    raise web.HTTPFound(back + ("?notice=digest_sent" if result == "ok" else f"?error=digest_{result}"))
+
+
+# ---------------------------------------------------------------------- owner page
+def require_owner(handler):
+    @require_login
+    async def wrapper(request: web.Request):
+        if request["user"]["user_id"] not in request.app["bot"].owner_ids:
+            raise web.HTTPNotFound()
+        return await handler(request)
+    return wrapper
+
+
+@require_owner
+async def admin(request: web.Request):
+    bot = request.app["bot"]
+    stats = bot.db.stats()
+    settings = {g["guild_id"]: g for g in bot.db.all_guilds()}
+    servers = []
+    for guild in bot.guilds:
+        s = settings.get(guild.id)
+        channel = guild.get_channel(s["channel_id"]) if s and s["channel_id"] else None
+        servers.append({
+            "id": guild.id, "name": guild.name, "members": guild.member_count or 0,
+            "icon": guild.icon.url if guild.icon else None,
+            "status": ("Paused" if s and not s["enabled"] else f"#{channel.name}" if channel else "Not set up"),
+            "active": bool(s and s["enabled"] and channel),
+            "digest": bool(s and s["digest_enabled"]),
+            "posts_30d": stats["posts_by_guild"].get(guild.id, 0),
+            "follows": stats["follows_by_guild"].get(guild.id, 0),
+            "error": s["last_error"] if s else None,
+        })
+    servers.sort(key=lambda x: -x["members"])
+    poll_next = bot.poll.next_iteration
+    return render(request, "admin.html", stats=stats, servers=servers,
+                  member_total=sum(x["members"] for x in servers),
+                  errors=[x for x in servers if x["error"]], last_check=bot.last_check,
+                  started_at=bot.started_at, next_check=poll_next, healthy=bot.is_healthy(),
+                  tmdb=bool(bot.tmdb_key), poll_minutes=bot.poll_minutes,
+                  csrf=request["user"]["csrf"], notice=request.query.get("notice"))
+
+
+@require_owner
+async def admin_check(request: web.Request):
+    bot = request.app["bot"]
+    form = await request.post()
+    check_csrf(request, form)
+    if bot.check_lock.locked():
+        raise web.HTTPFound("/admin?notice=busy")
+    async def run():
+        try:
+            await bot.run_check()
+        except Exception:
+            log.exception("Manual check from the owner page failed")
+    request.app["background"].add(task := asyncio.create_task(run()))
+    task.add_done_callback(request.app["background"].discard)
+    raise web.HTTPFound("/admin?notice=check_started")
+
+
 async def health(request: web.Request):
     bot = request.app["bot"]
-    return web.json_response({"ok": True, "discord_ready": bot.is_ready(), "servers": len(bot.guilds)})
+    healthy = bot.is_healthy()
+    return web.json_response({
+        "ok": healthy, "discord_ready": bot.is_ready(), "servers": len(bot.guilds),
+        "last_successful_check": bot.last_ok_check.isoformat() if bot.last_ok_check else None,
+    }, status=200 if healthy else 503)
 
 
 def create_app(bot) -> web.Application:
     app = web.Application(middlewares=[session_middleware], client_max_size=64 * 1024)
     app["bot"] = bot
+    app["background"] = set()  # keeps references to background tasks
     app.router.add_get("/", index)
     app.router.add_get("/login", login)
     app.router.add_get("/callback", callback)
@@ -308,6 +463,9 @@ def create_app(bot) -> web.Application:
     app.router.add_post("/dashboard/{guild_id}", guild_save)
     app.router.add_post("/dashboard/{guild_id}/test", guild_test)
     app.router.add_post("/dashboard/{guild_id}/reset-sources", guild_reset_sources)
+    app.router.add_post("/dashboard/{guild_id}/digest", guild_digest_now)
+    app.router.add_get("/admin", admin)
+    app.router.add_post("/admin/check", admin_check)
     app.router.add_get("/healthz", health)
     app.router.add_static("/static", BASE / "static")
     return app
