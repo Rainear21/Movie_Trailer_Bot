@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% set errors = {
+  "channel": "That channel couldn't be used. Pick a text channel from the list.",
+  "too_many": "You can watch up to 25 YouTube channels.",
+  "no_channel": "Pick a channel and save before sending a test post.",
+  "forbidden": "The bot isn't allowed to post in that channel. Give it View Channel, Send Messages and Embed Links there.",
+  "send_failed": "Discord rejected the test post. Try again in a moment."
+} %}
+{% set notices = {
+  "saved": "Settings saved.",
+  "reset": "Studio list reset to the defaults.",
+  "tested": "Test post sent - check your channel."
+} %}
+{% block title %}{{ guild.name }} · {{ bot_name }}{% endblock %}
+{% block content %}
+<a class="back muted" href="/dashboard">&larr; All servers</a>
+<h1 class="page-title">{{ guild.name }}</h1>
+
+{% if notice in notices %}<div class="banner ok">{{ notices[notice] }}</div>{% endif %}
+{% if error in errors %}<div class="banner bad">{{ errors[error] }}</div>{% endif %}
+{% if settings.last_error %}<div class="banner bad">{{ settings.last_error }}</div>{% endif %}
+
+<div class="layout">
+  <form class="settings" method="post" action="/dashboard/{{ guild.id }}">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+
+    <section class="card">
+      <h2>Where to post</h2>
+      <label class="switch">
+        <input type="checkbox" name="enabled" {{ "checked" if settings.enabled }}>
+        <span>Post new trailers in this server</span>
+      </label>
+
+      <label class="field">
+        <span>Channel</span>
+        <select name="channel_id">
+          <option value="">Choose a channel…</option>
+          {% for c in channels %}
+            <option value="{{ c.id }}" {{ "selected" if c.id == settings.channel_id }}>
+              #{{ c.name }}{% if c.category %} ({{ c.category }}){% endif %}{% if not c.ok %} - bot can't post here{% endif %}
+            </option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <label class="field">
+        <span>Role to ping <em class="muted">(optional)</em></span>
+        <select name="ping_role_id">
+          <option value="">Don't ping anyone</option>
+          {% for r in roles %}
+            <option value="{{ r.id }}" {{ "selected" if r.id == settings.ping_role_id }}>@{{ r.name }}</option>
+          {% endfor %}
+        </select>
+        <small class="muted">The role must be set to "Allow anyone to @mention this role", or the bot needs the Mention Everyone permission.</small>
+      </label>
+    </section>
+
+    <section class="card">
+      <h2>Studios to watch</h2>
+      <label class="field">
+        <span>YouTube channels, one per line</span>
+        <textarea name="youtube_channels" rows="8" spellcheck="false">{{ settings.youtube_channels | join("\n") }}</textarea>
+        <small class="muted">Use an @handle (like <code>@A24</code>), a channel link, or a channel ID.</small>
+      </label>
+      {% if sources %}
+      <ul class="chips">
+        {% for s in sources %}
+          <li class="{{ 'ok' if s.resolved else 'pending' }}" title="{{ 'Found' if s.resolved else 'Will be looked up on the next check' }}">{{ s.ref }}</li>
+        {% endfor %}
+      </ul>
+      <p class="muted small">Grey ones haven't been checked yet. If one stays grey after a check, its handle is probably wrong.</p>
+      {% endif %}
+    </section>
+
+    <section class="card">
+      <h2>Filters</h2>
+      <label class="field">
+        <span>Only post YouTube videos whose title contains</span>
+        <input type="text" name="include_keywords" value="{{ settings.include_keywords | join(', ') }}">
+        <small class="muted">Comma-separated. Leave empty to post every video from these channels.</small>
+      </label>
+      <label class="field">
+        <span>Never post titles containing</span>
+        <input type="text" name="exclude_keywords" value="{{ settings.exclude_keywords | join(', ') }}">
+      </label>
+      <label class="switch">
+        <input type="checkbox" name="skip_shorts" {{ "checked" if settings.skip_shorts }}>
+        <span>Skip YouTube Shorts</span>
+      </label>
+      <label class="switch {{ '' if tmdb_available else 'disabled' }}">
+        <input type="checkbox" name="use_tmdb" {{ "checked" if settings.use_tmdb and tmdb_available }} {{ "" if tmdb_available else "disabled" }}>
+        <span>Also post official trailers listed on TMDB
+          {% if not tmdb_available %}<em class="muted">(not configured on this bot)</em>{% endif %}</span>
+      </label>
+    </section>
+
+    <div class="save-bar"><button class="btn" type="submit">Save changes</button></div>
+  </form>
+
+  <aside>
+    <section class="card">
+      <h2>Test it</h2>
+      <p class="muted small">Sends a short message to the saved channel so you can check permissions.</p>
+      <form method="post" action="/dashboard/{{ guild.id }}/test">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button class="btn ghost" type="submit">Send test post</button>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>Recently posted</h2>
+      {% if recent %}
+        <ul class="recent">
+          {% for r in recent %}
+            <li><a href="{{ r.url }}" target="_blank" rel="noopener">{{ r.title }}</a>
+              <span class="muted small">{{ r.source_name }} · {{ r.posted_at[:10] }}</span></li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="muted small">Nothing yet. New trailers will appear here once they're posted.</p>
+      {% endif %}
+    </section>
+
+    <section class="card">
+      <h2>Studio list</h2>
+      <p class="muted small">Put back the default list of studios.</p>
+      <form method="post" action="/dashboard/{{ guild.id }}/reset-sources">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button class="btn ghost" type="submit">Reset to defaults</button>
+      </form>
+    </section>
+  </aside>
+</div>
+{% endblock %}

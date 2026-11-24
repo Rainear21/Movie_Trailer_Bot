@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero">
+  <p class="eyebrow">Discord bot</p>
+  <h1>New movie trailers,<br>posted the moment they drop.</h1>
+  <p class="lede">{{ bot_name }} watches the official studio channels and posts every new trailer and teaser
+    to your server as a playable video. No spam, no reaction videos, no repeats.</p>
+  <div class="actions">
+    <a class="btn" href="{{ invite_url }}">Add to Discord</a>
+    {% if login_enabled %}<a class="btn ghost" href="/dashboard">Open dashboard</a>{% endif %}
+  </div>
+  {% if server_count %}<p class="muted small">In {{ server_count }} server{{ "s" if server_count != 1 }}.</p>{% endif %}
+</section>
+
+<section class="features">
+  <div>
+    <h3>Pick your studios</h3>
+    <p>Warner Bros., Universal, Sony, Marvel, A24 and more out of the box. Add any YouTube channel you like.</p>
+  </div>
+  <div>
+    <h3>Filter the noise</h3>
+    <p>Only titles with "trailer" or "teaser" get through by default. Block words like "reaction" or "review".</p>
+  </div>
+  <div>
+    <h3>Ping the right people</h3>
+    <p>Choose a channel and, if you want, a role to notify whenever a new trailer lands.</p>
+  </div>
+</section>
+{% endblock %}

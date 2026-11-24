@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} · {{ bot_name }}{% endblock %}
+{% block content %}
+<div class="card message">
+  <h1 class="page-title">{{ title }}</h1>
+  <p>{{ text }}</p>
+  <a class="btn" href="/">Back to home</a>
+</div>
+{% endblock %}

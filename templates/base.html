@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ bot_name }}{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="/"><span class="mark" aria-hidden="true"></span>{{ bot_name }}</a>
+    <nav>
+      {% if user %}
+        <a href="/dashboard">Servers</a>
+        <span class="me">
+          {% if user.avatar %}<img src="https://cdn.discordapp.com/avatars/{{ user.user_id }}/{{ user.avatar }}.png?size=64" alt="">{% endif %}
+          {{ user.username }}
+        </span>
+        <a href="/logout" class="muted">Log out</a>
+      {% else %}
+        <a class="btn small" href="/login">Log in with Discord</a>
+      {% endif %}
+    </nav>
+  </header>
+  <main>{% block content %}{% endblock %}</main>
+  <footer>Trailers come from official studio YouTube channels and TMDB.</footer>
+</body>
+</html>

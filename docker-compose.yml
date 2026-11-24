@@ -1,0 +1,12 @@
+services:
+  trailerbot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8080:8080"
+    volumes:
+      - trailerbot-data:/data
+
+volumes:
+  trailerbot-data:

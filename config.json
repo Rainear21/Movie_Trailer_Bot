@@ -1,0 +1,25 @@
+{
+  "poll_minutes": 15,
+  "max_age_days": 7,
+  "max_posts_per_check": 10,
+  "include_keywords": ["trailer", "teaser"],
+  "exclude_keywords": ["reaction", "review", "breakdown", "recap", "explained", "fan made"],
+  "skip_shorts": true,
+  "youtube_channels": [
+    "@WarnerBrosPictures",
+    "@UniversalPictures",
+    "@SonyPictures",
+    "@ParamountPictures",
+    "@20thCenturyStudios",
+    "@Marvel",
+    "@A24",
+    "@Netflix"
+  ],
+  "tmdb": {
+    "enabled": true,
+    "lists": ["upcoming", "now_playing"],
+    "pages": 2,
+    "official_only": true,
+    "region": "US"
+  }
+}

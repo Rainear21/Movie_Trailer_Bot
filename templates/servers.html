@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Your servers · {{ bot_name }}{% endblock %}
+{% block content %}
+<h1 class="page-title">Choose a server</h1>
+<p class="muted">Servers where you have <strong>Manage Server</strong>.</p>
+
+{% if not servers %}
+  <div class="card empty">You don't manage any servers yet. Create one in Discord, then come back.</div>
+{% else %}
+<div class="grid">
+  {% for s in servers %}
+  <div class="card server {{ '' if s.in_server else 'dim' }}">
+    {% if s.icon %}
+      <img class="icon" src="https://cdn.discordapp.com/icons/{{ s.id }}/{{ s.icon }}.png?size=96" alt="">
+    {% else %}
+      <span class="icon initials">{{ s.name[:2] }}</span>
+    {% endif %}
+    <div class="server-text">
+      <strong>{{ s.name }}</strong>
+      <span class="muted small">{{ s.status }}</span>
+    </div>
+    {% if s.in_server %}
+      <a class="btn small" href="/dashboard/{{ s.id }}">Configure</a>
+    {% else %}
+      <a class="btn small ghost" href="{{ s.invite_url }}">Add bot</a>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

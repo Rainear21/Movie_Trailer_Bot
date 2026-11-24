@@ -1,0 +1,7 @@
+.env
+.venv/
+data/
+state.json
+__pycache__/
+.git/
+run.bat
